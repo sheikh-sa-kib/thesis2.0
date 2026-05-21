@@ -2,8 +2,7 @@
 batch_evaluator.py
 ─────────────────────────────────────────────────────────────────────────────
 FIX A6: Added timeout=600 (10 minutes) to process.wait().
-NEW: ACO_Standalone and PSO_Standalone added to ALGORITHMS list.
-     Total runs: 8 Algos × 6 Scenarios × 10 Seeds = 480 runs.
+Strategy A: 8 algorithms × 6 scenarios × 3 seeds = 144 runs (sequential execution).
 """
 import os
 import sys
@@ -14,7 +13,7 @@ from datetime import datetime
 THESIS_DIR             = os.path.expanduser("~/thesis")
 RESULTS_DIR            = os.path.join(THESIS_DIR, "results")
 LOGS_DIR               = os.path.join(RESULTS_DIR, "logs")
-SUMMARY_CSV            = os.path.join(RESULTS_DIR, "master_480run_summary.csv")
+SUMMARY_CSV            = os.path.join(RESULTS_DIR, "master_144run_summary.csv")
 SIMULATION_ENTRY_POINT = os.path.join(THESIS_DIR, "run_sim.py")
 
 ALGORITHMS = [
@@ -28,7 +27,8 @@ ALGORITHMS = [
     "E3_NoRL",             # NEW — ablation control: E³ without DQN layer
 ]
 SCENARIOS = [0, 1, 2, 3, 4, 5]
-SEEDS = [42, 123, 456, 789, 1337, 2024, 3001, 5555, 7777, 9999]
+# Minimum seeds for standard deviation / confidence bounds on weak hardware
+SEEDS = [42, 123, 456]
 
 RUN_TIMEOUT_SEC = 3600   # 30 minutes — covers dense S5 worst-case
 
@@ -193,7 +193,7 @@ def run_evaluation_matrix(skip_existing=True):
 
 def run_ablation_only(skip_existing=True):
     """
-    Runs only E3_Hybrid_Complete and E3_NoRL across 6 scenarios × 10 seeds = 120 runs.
+    Runs only E3_Hybrid_Complete and E3_NoRL across 6 scenarios × len(SEEDS) runs.
     Use this after the main batch is already complete.
     skip_existing=True means it won't re-run if CSV already exists.
     """
@@ -297,8 +297,8 @@ def run_ablation_only(skip_existing=True):
 if __name__ == "__main__":
     import sys
     if "--ablation-only" in sys.argv:
-        # Run only the 120-run ablation (E3_Full vs E3_NoRL)
+        # Ablation only (E3_Full vs E3_NoRL)
         run_ablation_only(skip_existing=True)
     else:
-        # Full 480-run evaluation matrix.
+        # Full 144-run evaluation matrix (sequential, one SUMO instance at a time).
         run_evaluation_matrix(skip_existing=True)
