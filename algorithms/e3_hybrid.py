@@ -35,48 +35,13 @@ from algorithms.aco import _combined_edge_score, _energy_cost_wh
 from algorithms.route_validator import (
     validate_detour_entry,
     find_safe_intermediate_target,
+    find_dynamic_bypass_targets,
 )
 from chargers import (
     ChargingNetwork,
     CRITICAL_BATTERY_THRESHOLD,
     LOW_BATTERY_THRESHOLD,
 )
-
-def find_dynamic_bypass_targets(net_file, blocked_edge_id, lookup_depth=2):
-    """
-    Traverse the SUMO network topology downstream of a blocked edge and return
-    candidate bypass edges without relying on city-specific hard-coded IDs.
-    """
-    net = sumolib.net.readNet(os.path.expanduser(net_file))
-
-    try:
-        start_edge = net.getEdge(blocked_edge_id)
-    except Exception:
-        return []
-    to_node = start_edge.getToNode()
-
-    bypass_edges = []
-    for outgoing_edge in to_node.getOutgoing():
-        out_id = outgoing_edge.getID()
-        if not out_id.startswith(":"):
-            bypass_edges.append(out_id)
-
-    if lookup_depth > 1 and len(bypass_edges) < 2:
-        extended_edges = []
-        for b_edge in bypass_edges:
-            edge_obj = net.getEdge(b_edge)
-            for next_hop in edge_obj.getToNode().getOutgoing():
-                nh_id = next_hop.getID()
-                if (
-                    not nh_id.startswith(":")
-                    and nh_id not in bypass_edges
-                    and nh_id not in extended_edges
-                ):
-                    extended_edges.append(nh_id)
-        bypass_edges.extend(extended_edges)
-
-    return bypass_edges
-
 
 class E3HybridOptimizer:
 
@@ -730,10 +695,7 @@ class E3HybridOptimizer:
         if not candidates:
             return
 
-        if current_step > 110:
-            max_reroute = max(1, int(len(candidates) * 0.50))
-        else:
-            max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
+        max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
 
         onlookers = random.sample(candidates, min(max_reroute, len(candidates)))
 

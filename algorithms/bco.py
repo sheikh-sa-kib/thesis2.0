@@ -28,6 +28,7 @@ import traci
 from algorithms.route_validator import (
     validate_detour_entry,
     find_safe_intermediate_target,
+    find_dynamic_bypass_targets,
 )
 
 # Optional charger network injected from E³-Hybrid
@@ -161,6 +162,7 @@ class BeeColonyOptimizer:
         if edge_data:
             self.graph.remove_edge(u, v)
 
+        bypass_targets = find_dynamic_bypass_targets(self.net_file, blocked_edge)
         discovered_routes = []
         active_evs = [
             v_id for v_id in traci.vehicle.getIDList()
@@ -172,11 +174,27 @@ class BeeColonyOptimizer:
         for scout_id in scouts:
             try:
                 curr_edge = traci.vehicle.getRoadID(scout_id)
-                dest_edge = traci.vehicle.getRoute(scout_id)[-1]
-                start_node, _ = self._edge_to_nodes(curr_edge)
-                _, end_node   = self._edge_to_nodes(dest_edge)
+                if curr_edge == blocked_edge:
+                    continue
+                try:
+                    own_dest = traci.vehicle.getRoute(scout_id)[-1]
+                except Exception:
+                    own_dest = None
+                candidate_targets = []
+                for bypass_target in bypass_targets:
+                    if bypass_target not in (blocked_edge, curr_edge):
+                        candidate_targets.append(bypass_target)
+                if own_dest and own_dest != blocked_edge:
+                    candidate_targets.append(own_dest)
+                candidate_targets = list(dict.fromkeys(candidate_targets))
 
-                if start_node and end_node and start_node != end_node:
+                for dest_edge in candidate_targets:
+                    start_node, _ = self._edge_to_nodes(curr_edge)
+                    _, end_node   = self._edge_to_nodes(dest_edge)
+
+                    if not (start_node and end_node and start_node != end_node):
+                        continue
+
                     node_path = nx.shortest_path(
                         self.graph,
                         source=start_node,
@@ -189,11 +207,12 @@ class BeeColonyOptimizer:
                         if ed and "edge_id" in ed:
                             route_edges.append(ed["edge_id"])
 
-                    if route_edges:
+                    if route_edges and blocked_edge not in route_edges:
                         fitness = self.compute_fitness(route_edges, current_step)
                         discovered_routes.append(
                             {"route": route_edges, "fitness": fitness}
                         )
+                        break
 
             except (nx.NetworkXNoPath, nx.NodeNotFound,
                     traci.exceptions.TraCIException):
@@ -377,11 +396,7 @@ class BeeColonyOptimizer:
             )
             return
 
-        # Cap re-routing on later sweeps to prevent herding
-        if current_step > 110:
-            max_reroute = max(1, int(len(candidates) * 0.10))
-        else:
-            max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
+        max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
 
         onlookers = random.sample(candidates, min(max_reroute, len(candidates)))
 

@@ -15,6 +15,9 @@ before any changeTarget / setRoute call:
 All functions are pure TraCI queries — no simulation state is mutated here.
 """
 
+import os
+
+import sumolib
 import traci
 
 
@@ -143,3 +146,39 @@ def find_safe_intermediate_target(v_id: str, detour_edge_list: list) -> str | No
                     return intermediate_edge
 
     return None
+
+
+def find_dynamic_bypass_targets(net_file, blocked_edge_id, lookup_depth=2):
+    """
+    Traverse the SUMO network topology downstream of a blocked edge and return
+    candidate bypass edges without relying on city-specific hard-coded IDs.
+    """
+    net = sumolib.net.readNet(os.path.expanduser(net_file))
+
+    try:
+        start_edge = net.getEdge(blocked_edge_id)
+    except Exception:
+        return []
+    to_node = start_edge.getToNode()
+
+    bypass_edges = []
+    for outgoing_edge in to_node.getOutgoing():
+        out_id = outgoing_edge.getID()
+        if not out_id.startswith(":"):
+            bypass_edges.append(out_id)
+
+    if lookup_depth > 1 and len(bypass_edges) < 2:
+        extended_edges = []
+        for b_edge in bypass_edges:
+            edge_obj = net.getEdge(b_edge)
+            for next_hop in edge_obj.getToNode().getOutgoing():
+                nh_id = next_hop.getID()
+                if (
+                    not nh_id.startswith(":")
+                    and nh_id not in bypass_edges
+                    and nh_id not in extended_edges
+                ):
+                    extended_edges.append(nh_id)
+        bypass_edges.extend(extended_edges)
+
+    return bypass_edges

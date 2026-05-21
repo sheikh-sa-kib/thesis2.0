@@ -40,6 +40,11 @@ from constraints.battery            import BatteryModel
 from constraints.driver_environment import EnvironmentConstraints
 from metrics.logger                 import SimulationLogger
 from scenarios.engine               import ScenarioEngine
+from chargers import (
+    ChargingNetwork,
+    CRITICAL_BATTERY_THRESHOLD,
+    LOW_BATTERY_THRESHOLD,
+)
 from emergency_corridor             import (
     UNIFORM_V2X_CORRIDOR,
     calculate_corridor_warning_range,
@@ -303,6 +308,63 @@ def _apply_rl_action(action, hybrid_swarm):
     hybrid_swarm.rho             = params["rho"]
 
 
+def _handle_baseline_low_battery_routing(v_id, battery_model, charging_network, state):
+    """
+    Charger routing for non-E3 algorithms using the shared ChargingNetwork.
+    Mirrors E3 low-battery handling so all competitors face the same energy constraints.
+    """
+    targets = state["targets"]
+    routes  = state["routes"]
+    soc     = battery_model.get_soc(v_id)
+
+    if v_id in targets:
+        target_edge = targets[v_id]
+        try:
+            current_edge = traci.vehicle.getRoadID(v_id)
+        except traci.exceptions.TraCIException:
+            return
+        if current_edge == target_edge:
+            charging_network.register_arrival(v_id, target_edge)
+            battery_model.start_charging(v_id)
+            targets.pop(v_id, None)
+            routes.pop(v_id, None)
+            return
+        stored = routes.get(v_id)
+        if stored and int(traci.simulation.getTime()) % 30 == 0:
+            try:
+                traci.vehicle.setRoute(v_id, stored)
+            except traci.exceptions.TraCIException:
+                pass
+        return
+
+    if soc > LOW_BATTERY_THRESHOLD:
+        return
+
+    require_slot = soc > CRITICAL_BATTERY_THRESHOLD
+    station, route = charging_network.nearest_reachable(
+        v_id, require_available=require_slot
+    )
+    if station is None or not route:
+        return
+
+    try:
+        current_edge = traci.vehicle.getRoadID(v_id)
+    except traci.exceptions.TraCIException:
+        return
+
+    if current_edge == station.edge_id:
+        charging_network.register_arrival(v_id, station.edge_id)
+        battery_model.start_charging(v_id)
+        return
+
+    try:
+        traci.vehicle.setRoute(v_id, route)
+        targets[v_id] = station.edge_id
+        routes[v_id]  = route
+    except traci.exceptions.TraCIException:
+        pass
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -401,14 +463,17 @@ def main():
         "--seed",                         str(current_seed),
     ])
 
-    # Initialise charging network (resolves lat/lon → edge IDs)
-    if algo_name in ("E3_Hybrid_Complete", "E3_NoRL") and hybrid_swarm is not None:
-        hybrid_swarm.charging_network.resolve_edges()
-        mapped = sum(1 for s in hybrid_swarm.charging_network.stations if s.edge_id)
-        print(
-            f"[CHARGER] Network ready — {mapped} / "
-            f"{len(hybrid_swarm.charging_network.stations)} stations mapped"
-        )
+    # Shared charging network for all algorithms (fair EV energy constraints)
+    shared_charging_network = ChargingNetwork()
+    shared_charging_network.resolve_edges()
+    if hybrid_swarm is not None:
+        hybrid_swarm.charging_network = shared_charging_network
+    mapped = sum(1 for s in shared_charging_network.stations if s.edge_id)
+    print(
+        f"[CHARGER] Network ready — {mapped} / "
+        f"{len(shared_charging_network.stations)} stations mapped"
+    )
+    baseline_charging_state = {"targets": {}, "routes": {}}
 
     step                  = 0
     emergency_spawned     = False
@@ -432,16 +497,16 @@ def main():
         battery_model.process_step(logger)
         v2x_layer.process_message_queue(step)
 
-        # Step charging network (E³-Hybrid / ablation)
-        if algo_name in ("E3_Hybrid_Complete", "E3_NoRL") and hybrid_swarm is not None:
-            released = hybrid_swarm.charging_network.step(battery_model)
-            for veh_id in released:
-                battery_model.stop_charging(veh_id)
+        # Step charging network for all algorithms
+        released = shared_charging_network.step(battery_model)
+        for veh_id in released:
+            battery_model.stop_charging(veh_id)
+            if hybrid_swarm is not None:
                 hybrid_swarm._charging_done.add(veh_id)
-                try:
-                    traci.vehicle.rerouteTraveltime(veh_id)
-                except traci.exceptions.TraCIException:
-                    pass
+            try:
+                traci.vehicle.rerouteTraveltime(veh_id)
+            except traci.exceptions.TraCIException:
+                pass
 
         # Track SUMO-initiated teleports (separate from our guard's removals)
         try:
@@ -473,10 +538,14 @@ def main():
         _apply_teleport_guard(all_vehicles, algo_name=algo_name,
                               teleport_counter=teleport_counter)
 
-        # Low-battery → charger (every step; must not use bare changeTarget)
-        if algo_name in ("E3_Hybrid_Complete", "E3_NoRL") and hybrid_swarm is not None:
-            for v_id in active_evs:
+        # Low-battery → charger (every step; all algorithms)
+        for v_id in active_evs:
+            if algo_name in ("E3_Hybrid_Complete", "E3_NoRL") and hybrid_swarm is not None:
                 hybrid_swarm._handle_low_battery_routing(v_id, battery_model)
+            else:
+                _handle_baseline_low_battery_routing(
+                    v_id, battery_model, shared_charging_network, baseline_charging_state
+                )
 
         # ── Emergency corridor ────────────────────────────────────────────
         _apply_emergency_corridor(
@@ -615,11 +684,8 @@ def main():
                 new_blocks = [be for be in scenario_engine.blocked_edges
                             if be not in dijkstra_handled_blocks]
                 if new_blocks:
-                    packet_loss = 0.95 if scenario_engine.blackout_active else 0.22
                     for v_id in active_evs:
                         try:
-                            if random.random() < packet_loss:
-                                continue
                             if env_constraints.check_driver_compliance(v_id):
                                 dijkstra_router.reroute_vehicle(
                                     v_id,
@@ -634,11 +700,8 @@ def main():
                 new_blocks = [be for be in scenario_engine.blocked_edges
                             if be not in astar_handled_blocks]
                 if new_blocks:
-                    packet_loss = 0.95 if scenario_engine.blackout_active else 0.22
                     for v_id in active_evs:
                         try:
-                            if random.random() < packet_loss:
-                                continue
                             if env_constraints.check_driver_compliance(v_id):
                                 astar_router.reroute_vehicle(
                                     v_id,
@@ -685,7 +748,6 @@ def main():
                 for be in scenario_engine.blocked_edges:
                     if be not in hybrid_swarm._triggered_blocks:
                         hybrid_swarm.trigger_emergency_response(be, step)
-                        hybrid_swarm.trigger_emergency_response(be, step + 2)
                         hybrid_swarm._triggered_blocks.add(be)
 
                 if step >= 100 and step % SWARM_REEVAL_INTERVAL == 0:

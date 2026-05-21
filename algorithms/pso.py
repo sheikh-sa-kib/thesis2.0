@@ -32,6 +32,7 @@ import sumolib
 import traci
 from algorithms.aco import _energy_cost_wh   # shared energy model
 from algorithms.route_validator import (
+    find_dynamic_bypass_targets,
     validate_detour_entry,
     find_safe_intermediate_target,
 )
@@ -78,6 +79,7 @@ class ParticleSwarmOptimizer:
         # Battery-Aware Routing: energy weighting parameters
         self.energy_alpha = 0.7   # travel-time weight
         self.energy_beta  = 0.3   # energy-cost weight
+        self.ratio_onlookers = 0.30  # matches E³ default before RL tuning
 
         self._init_swarm()
 
@@ -368,6 +370,7 @@ class ParticleSwarmOptimizer:
             v_id for v_id in traci.vehicle.getIDList()
             if traci.vehicle.getTypeID(v_id) == "ev_swarm"
         ]
+        bypass_targets = find_dynamic_bypass_targets(self.net_file, blocked_edge)
         scouts  = random.sample(active_evs, min(self.N_PARTICLES, len(active_evs)))
         detours = []
         seen    = set()
@@ -375,17 +378,30 @@ class ParticleSwarmOptimizer:
         for v_id in scouts:
             try:
                 curr_edge = traci.vehicle.getRoadID(v_id)
-                dest_edge = traci.vehicle.getRoute(v_id)[-1]
                 if curr_edge.startswith(":") or curr_edge == blocked_edge:
                     continue
-                route = self.compute_best_path(
-                    curr_edge, dest_edge, blocked_edges=[blocked_edge]
-                )
-                if route and blocked_edge not in route:
-                    key = tuple(route)
-                    if key not in seen:
-                        seen.add(key)
-                        detours.append(route)
+                try:
+                    own_dest = traci.vehicle.getRoute(v_id)[-1]
+                except Exception:
+                    own_dest = None
+                candidate_targets = []
+                for bypass_target in bypass_targets:
+                    if bypass_target not in (blocked_edge, curr_edge):
+                        candidate_targets.append(bypass_target)
+                if own_dest and own_dest != blocked_edge:
+                    candidate_targets.append(own_dest)
+                candidate_targets = list(dict.fromkeys(candidate_targets))
+
+                for dest_edge in candidate_targets:
+                    route = self.compute_best_path(
+                        curr_edge, dest_edge, blocked_edges=[blocked_edge]
+                    )
+                    if route and blocked_edge not in route:
+                        key = tuple(route)
+                        if key not in seen:
+                            seen.add(key)
+                            detours.append(route)
+                            break
             except traci.exceptions.TraCIException:
                 continue
 
@@ -428,7 +444,7 @@ class ParticleSwarmOptimizer:
         if not candidates:
             return
 
-        max_reroute = max(1, int(len(candidates) * 0.25))
+        max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
         onlookers   = random.sample(candidates, min(max_reroute, len(candidates)))
 
         rerouted = 0

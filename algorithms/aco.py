@@ -32,6 +32,7 @@ FREE_FLOW_SPEED_MS    = 13.9    # ~50 km/h reference speed (m/s)
 from algorithms.route_validator import (
     validate_detour_entry,
     find_safe_intermediate_target,
+    find_dynamic_bypass_targets,
 )
 
 
@@ -87,7 +88,8 @@ class AntColonyOptimizer:
         self.rho         = 0.05          # evaporation rate (higher than E3 = less memory)
         self.alpha        = 1.0          # pheromone weight (fixed, unlike PSO-tuned E3)
         self.beta         = 2.0          # heuristic weight (fixed)
-        self.n_ants       = 10           # virtual ants per reroute event
+        self.n_ants           = 10       # virtual ants per reroute event
+        self.ratio_onlookers  = 0.30     # matches E³ default before RL tuning
 
         # Route cache
         self.scout_reports   = {}        # blocked_edge -> list of route lists
@@ -119,9 +121,13 @@ class AntColonyOptimizer:
                 weight=base_time,
                 length=length,
             )
-            # Initialise pheromone proportional to edge speed (fast roads start hotter)
-            warm = self.tau_init * (0.5 + 0.5 * (speed / 13.9))
-            self.pheromones[edge.getID()] = max(self.tau_min, min(self.tau_max, warm))
+            try:
+                lns = edge.getLaneNumber()
+                warm = self.tau_init * (0.5 + 0.5 * (speed / 13.9)) * (0.8 + 0.2 * lns)
+                warm = max(self.tau_min, min(self.tau_max, warm))
+            except Exception:
+                warm = self.tau_init
+            self.pheromones[edge.getID()] = warm
 
         print(f"[ACO] Graph built: {len(self.graph.nodes)} nodes, "
               f"{len(self.graph.edges)} edges.")
@@ -355,26 +361,39 @@ class AntColonyOptimizer:
         ]
         scout_sample = random.sample(active_evs, min(self.n_ants, len(active_evs)))
 
+        bypass_targets = find_dynamic_bypass_targets(self.net_file, blocked_edge)
         discovered = []
         seen       = set()
 
         for v_id in scout_sample:
             try:
                 curr_edge = traci.vehicle.getRoadID(v_id)
-                dest_edge = traci.vehicle.getRoute(v_id)[-1]
                 if curr_edge.startswith(":") or curr_edge == blocked_edge:
                     continue
+                try:
+                    own_dest = traci.vehicle.getRoute(v_id)[-1]
+                except Exception:
+                    own_dest = None
+                candidate_targets = []
+                for bypass_target in bypass_targets:
+                    if bypass_target not in (blocked_edge, curr_edge):
+                        candidate_targets.append(bypass_target)
+                if own_dest and own_dest != blocked_edge:
+                    candidate_targets.append(own_dest)
+                candidate_targets = list(dict.fromkeys(candidate_targets))
 
-                route = self.compute_aco_path(
-                    curr_edge, dest_edge, blocked_edges=[blocked_edge]
-                )
-                if route and blocked_edge not in route:
-                    key = tuple(route)
-                    if key not in seen:
-                        seen.add(key)
-                        travel_time = len(route) * 10  # proxy
-                        self.reinforce_route(route, travel_time)
-                        discovered.append(route)
+                for dest_edge in candidate_targets:
+                    route = self.compute_aco_path(
+                        curr_edge, dest_edge, blocked_edges=[blocked_edge]
+                    )
+                    if route and blocked_edge not in route:
+                        key = tuple(route)
+                        if key not in seen:
+                            seen.add(key)
+                            travel_time = len(route) * 10  # proxy
+                            self.reinforce_route(route, travel_time)
+                            discovered.append(route)
+                            break
             except traci.exceptions.TraCIException:
                 continue
 
@@ -413,8 +432,7 @@ class AntColonyOptimizer:
         if not candidates:
             return
 
-        # ACO reroutes a fixed 25% per sweep (no dynamic cap like E3)
-        max_reroute = max(1, int(len(candidates) * 0.25))
+        max_reroute = max(1, int(len(candidates) * self.ratio_onlookers))
         onlookers   = random.sample(candidates, min(max_reroute, len(candidates)))
 
         rerouted = 0
