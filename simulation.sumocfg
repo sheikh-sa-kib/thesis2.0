@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<configuration>
+    <input>
+        <net-file value="network/midtown.net.xml" />
+        <additional-files value="demand/vehicle_types.xml" />
+        <route-files value="demand/dense_final.rou.xml" />
+    </input>
+
+    <time>
+        <begin value="0" />
+        <end value="3600" />
+        <step-length value="1.0" />
+    </time>
+
+    <processing>
+        <ignore-route-errors value="true" />
+        <device.rerouting.probability value="0" />
+        <collision.action value="teleport" />
+    </processing>
+</configuration>

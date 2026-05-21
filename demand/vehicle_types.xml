@@ -1,0 +1,7 @@
+<additional>
+    <vType id="ev_swarm" accel="2.5" decel="4.5" sigma="0.5" length="4.5" maxSpeed="20.0" color="0,204,204"/>
+
+    <vType id="non_ev" accel="2.0" decel="4.0" sigma="0.7" length="4.5" maxSpeed="15.0" color="200,200,200"/>
+
+    <vType id="emergency" accel="3.5" decel="5.0" sigma="0.2" length="6.0" maxSpeed="30.0" color="255,0,0" vClass="emergency" guiShape="emergency"/>
+</additional>
