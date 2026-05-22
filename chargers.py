@@ -184,8 +184,14 @@ class ChargingNetwork:
         ranked = self._stations_by_distance(veh_id, require_available=False)
         return ranked[0][0] if ranked else None
 
-    def step(self, battery_tracker):
+    def step(self, battery_tracker, active_vehicle_ids=None):
         """Advance all stations by one simulation step."""
+        if active_vehicle_ids is not None:
+            active = set(active_vehicle_ids)
+            for station in self.stations:
+                station.occupied = {v for v in station.occupied if v in active}
+                station.queue = [v for v in station.queue if v in active]
+
         released = []
         for station in self.stations:
             done = station.step(battery_tracker)

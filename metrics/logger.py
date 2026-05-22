@@ -44,8 +44,18 @@ class SimulationLogger:
         self._guard_removal_total = 0
 
     def log_step(self, step):
-        vehicle_ids = traci.vehicle.getIDList()
+        try:
+            vehicle_ids = traci.vehicle.getIDList()
+        except traci.exceptions.TraCIException:
+            return
+
         for v_id in vehicle_ids:
+            try:
+                if traci.vehicle.getTypeID(v_id) != "ev_swarm":
+                    continue
+            except traci.exceptions.TraCIException:
+                continue
+
             if v_id not in self.travel_times:
                 self.travel_times[v_id]   = 0.0
                 self.waiting_times[v_id]  = 0.0
@@ -63,6 +73,15 @@ class SimulationLogger:
                 self.waiting_times[v_id] += 1.0
 
             self.distances[v_id] += speed
+
+        # Drop metrics for vehicles that have left the simulation
+        active = set(vehicle_ids)
+        for stale_id in list(self.travel_times):
+            if stale_id not in active:
+                self.travel_times.pop(stale_id, None)
+                self.waiting_times.pop(stale_id, None)
+                self.distances.pop(stale_id, None)
+                self.reroute_counts.pop(stale_id, None)
 
     def record_reroute(self, vehicle_id):
         if vehicle_id in self.reroute_counts:

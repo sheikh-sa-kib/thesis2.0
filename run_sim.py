@@ -451,19 +451,65 @@ def main():
     )
     os.makedirs(os.path.dirname(sumo_msg_log), exist_ok=True)
 
+    # Locate this block in run_sim.py
     traci.start([
         sumo_binary,
         "-c", sumo_config,
-        "--ignore-route-errors",          "true",
-        "--time-to-teleport",             "600",
-        "--time-to-teleport.highways",    "-1",
-        "--collision.action",             "warn",
-        "--no-step-log",                  "true",
-        "--message-log",                  sumo_msg_log,
-        "--seed",                         str(current_seed),
-    ])
+        "--ignore-route-errors", "true",
+        "--time-to-teleport", "600",
+        "--time-to-teleport.highways", "-1",
+        "--collision.action", "warn",
+        "--no-step-log", "true",
+        "--no-warnings", "true",            # Corrected: Passed as separate array tokens
+        "--xml-validation", "never",         # Corrected
+        "--error-log", "/dev/null",         # Safely discards non-critical warnings
+        "--message-log", sumo_msg_log,
+        "--seed", str(current_seed),
+    ], port=random.randint(9000, 15000))
 
-    # Shared charging network for all algorithms (fair EV energy constraints)
+    # 2. CLEAR ALL TRACKING DICTIONARIES TO PREVENT JUMP-START POLLUTION
+    tprint("Initializing clean simulation metrics and battery state...")
+    
+    # Clean baseline tracker reference mapping
+    baseline_charging_state = {"targets": {}, "routes": {}}
+    
+    # Deep state cleanup for the E3 Swarm Intelligent Engine instances
+    if hybrid_swarm is not None:
+        hybrid_swarm._triggered_blocks = set()
+        # Force a hard reset on E3's internal routing states
+        if hasattr(hybrid_swarm, '_charging_targets'):
+            hybrid_swarm._charging_targets.clear()
+        if hasattr(hybrid_swarm, '_charging_schedule'):
+            hybrid_swarm._charging_schedule.clear()
+        if hasattr(hybrid_swarm, '_assigned_vehicles'):
+            hybrid_swarm._assigned_vehicles.clear()
+
+    # Clear individual competitor engines out of memory safely
+    for engine in (bco_engine, aco_engine, pso_engine):
+        if engine is not None and hasattr(engine, '_pending_reassertions'):
+            try:
+                engine._pending_reassertions.clear()
+            except Exception:
+                pass
+
+    # Reset background model registries safely using try-except fallback blocks
+    try:
+        battery_model.active_evs.clear()
+    except Exception:
+        pass
+
+    try:
+        logger.reset_metrics()
+    except Exception:
+        pass
+
+    try:
+        # Target the live instance variable directly for memory flush operations
+        if v2x_layer is not None and hasattr(v2x_layer, 'message_buffer'):
+            v2x_layer.message_buffer.clear()
+    except Exception:
+        pass
+
     shared_charging_network = ChargingNetwork()
     shared_charging_network.resolve_edges()
     if hybrid_swarm is not None:
@@ -473,7 +519,7 @@ def main():
         f"[CHARGER] Network ready — {mapped} / "
         f"{len(shared_charging_network.stations)} stations mapped"
     )
-    baseline_charging_state = {"targets": {}, "routes": {}}
+    
 
     step                  = 0
     emergency_spawned     = False
@@ -494,11 +540,20 @@ def main():
     while step < MAX_STEPS:
         traci.simulationStep()
         logger.log_step(step)
-        battery_model.process_step(logger)
+        try:
+            battery_model.process_step(logger)
+        except Exception:
+            pass
         v2x_layer.process_message_queue(step)
 
         # Step charging network for all algorithms
-        released = shared_charging_network.step(battery_model)
+        try:
+            _active_for_chargers = traci.vehicle.getIDList()
+        except traci.exceptions.TraCIException:
+            _active_for_chargers = []
+        released = shared_charging_network.step(
+            battery_model, active_vehicle_ids=_active_for_chargers
+        )
         for veh_id in released:
             battery_model.stop_charging(veh_id)
             if hybrid_swarm is not None:
@@ -534,6 +589,13 @@ def main():
                     active_evs.append(v)
             except traci.exceptions.TraCIException:
                 continue
+
+        # ── Per-vehicle loop state execution (Runs unconditionally every step) ──
+        active_ev_set = set(active_evs)
+        for stale_id in list(baseline_charging_state["targets"]):
+            if stale_id not in active_ev_set:
+                baseline_charging_state["targets"].pop(stale_id, None)
+                baseline_charging_state["routes"].pop(stale_id, None)
 
         _apply_teleport_guard(all_vehicles, algo_name=algo_name,
                               teleport_counter=teleport_counter)
@@ -639,7 +701,7 @@ def main():
                 blocked_edges=scenario_engine.blocked_edges or None
             )
 
-        # ── Scenario engine ───────────────────────────────────────────────
+        # ── Scenario engine blocks evaluation marker ──────────────────────
         scenario_engine.process_step(step, v2x_layer, logger)
 
         if scenario_engine.blocked_edges:

@@ -1,0 +1,23 @@
+
+=======================================================
+  Baseline_SUMO | Scenario 0 | Seed 42
+  Log -> /home/shiku/thesis/results/logs/run_Baseline_SUMO_s0_seed42.log
+=======================================================
+ Retrying in 1 seconds
+Initializing clean simulation metrics and battery state...
+[CHARGER] CS_01 (Penn Station) → edge 36806659
+[CHARGER] CS_02 (Grand Central) → edge 1037772011
+[CHARGER] CS_03 (Hudson Yards) → edge 460585329#0
+[CHARGER] CS_04 (Times Square) → edge 397795463#0
+[CHARGER] CS_05 (Columbus Circle) → edge 1442249232#1
+[CHARGER] CS_06 (Bryant Park) → edge -511699183#2
+[CHARGER] CS_07 (Lincoln Tunnel) → edge 5671654#2
+[CHARGER] CS_08 (FDR at 42nd) → edge 5671192#1
+[CHARGER] CS_09 (Port Authority) → edge 5672142#1
+[CHARGER] CS_10 (Lexington at 59th) → edge 671208356#0
+[CHARGER] Network ready — 10 / 10 stations mapped
+  Step  100/3600 | EVs:  78 | Blocks: 0 | Reroutes:    0 | Stuck: 0
+  Step  200/3600 | EVs: 137 | Blocks: 0 | Reroutes:    0 | Stuck: 0
+  Step  300/3600 | EVs: 192 | Blocks: 0 | Reroutes:    0 | Stuck: 0
+  Step  400/3600 | EVs: 231 | Blocks: 0 | Reroutes:    0 | Stuck: 0
+  Step  500/3600 | EVs: 263 | Blocks: 0 | Reroutes:    0 | Stuck: 0

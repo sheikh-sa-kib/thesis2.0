@@ -31,7 +31,7 @@ SUMOCFG     = os.path.abspath(os.path.join(THESIS_DIR, "simulation.sumocfg"))
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--period",
-    default="0.35",
+    default="0.25",
     help="randomTrips.py departure period; lower values generate denser demand.",
 )
 args = parser.parse_args()

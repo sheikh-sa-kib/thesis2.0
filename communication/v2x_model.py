@@ -4,6 +4,26 @@ import random
 import traci
 
 
+def _active_ev_swarm_ids(vehicle_ids=None):
+    """
+    Return ev_swarm IDs that still exist in SUMO.
+    Vehicles can depart between getIDList() and a follow-up TraCI call.
+    """
+    if vehicle_ids is None:
+        try:
+            vehicle_ids = traci.vehicle.getIDList()
+        except traci.exceptions.TraCIException:
+            return []
+    ev_ids = []
+    for v_id in vehicle_ids:
+        try:
+            if traci.vehicle.getTypeID(v_id) == "ev_swarm":
+                ev_ids.append(v_id)
+        except traci.exceptions.TraCIException:
+            continue
+    return ev_ids
+
+
 class V2XCommunicationLayer:
     def __init__(self):
         self._omnet_log = []
@@ -136,16 +156,20 @@ class V2XCommunicationLayer:
         for msg in self.message_buffer:
             if current_step >= msg["deliver_at_step"]:
                 receiver_id = msg["receiver_id"]
-                if routing_controller:
+                try:
+                    still_present = traci.vehicle.getIDCount(receiver_id) > 0
+                except traci.exceptions.TraCIException:
+                    still_present = False
+                if still_present and routing_controller:
                     try:
-                        if traci.vehicle.getIDCount(receiver_id):
-                            avoid_edge = msg["alert_data"]["location"]["edge_id"]
-                            routing_controller.handle_v2x_alert(
-                                receiver_id, avoid_edge
-                            )
+                        avoid_edge = msg["alert_data"]["location"]["edge_id"]
+                        routing_controller.handle_v2x_alert(
+                            receiver_id, avoid_edge
+                        )
                     except Exception:
                         pass
-                delivered_count += 1
+                if still_present:
+                    delivered_count += 1
             else:
                 remaining_buffer.append(msg)
 
@@ -154,21 +178,20 @@ class V2XCommunicationLayer:
 
     def log_periodic_broadcast(self, current_step, packet_loss_override=None):
         """
-        Logs ambient V2X activity every simulation step.
-        Called from run_sim.py each step to capture ongoing fleet communication
+        Logs ambient V2X activity (sampled every 10 sim steps to limit TraCI load).
+        Called from run_sim.py to capture ongoing fleet communication
         (pheromone updates, congestion signals) beyond one-time block alerts.
         """
+        if current_step % 10 != 0:
+            return
+
         loss_rate = (
             packet_loss_override
             if packet_loss_override is not None
             else self.base_packet_loss
         )
         try:
-            active_vehicles = traci.vehicle.getIDList()
-            ev_vehicles = [
-                v for v in active_vehicles
-                if traci.vehicle.getTypeID(v) == "ev_swarm"
-            ]
+            ev_vehicles = _active_ev_swarm_ids()
         except Exception:
             return
 
